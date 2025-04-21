@@ -16,6 +16,7 @@ struct WelcomeView: View {
     @State private var userLocation: CLLocationCoordinate2D?
     @State private var isLoadingNearbyStations = false
     @State private var showLocationPermissionAlert = false
+    @State private var didRequestClosestStation = false // Flag for button action
     
     // Use a private instance of the location manager helper
     @StateObject private var locationHelper = LocationHelper()
@@ -64,7 +65,8 @@ struct WelcomeView: View {
                 Button(action: {
                     print("WelcomeView: 'Use Station Closest to Me' button tapped")
                     isLoadingNearbyStations = true
-                    locationHelper.requestLocation()
+                    didRequestClosestStation = true // Set the flag
+                    locationHelper.requestLocation() // This triggers the flow
                 }) {
                     Label("Use Station Closest to Me", systemImage: "location.near.me")
                         .font(.subheadline)
@@ -93,7 +95,7 @@ struct WelcomeView: View {
                     
                     List(searchResults) { location in
                         Button(action: {
-                            selectedLocation = location
+                            self.selectLocation(location)
                         }) {
                             VStack(alignment: .leading) {
                                 Text(location.name)
@@ -119,34 +121,6 @@ struct WelcomeView: View {
                 }
                 
                 Spacer()
-                
-                if let location = selectedLocation {
-                    VStack(spacing: 10) {
-                        Text("Selected Station:")
-                            .font(.headline)
-                        
-                        Text(location.name)
-                            .font(.title3)
-                            .fontWeight(.semibold)
-                        
-                        Button(action: {
-                            selectLocation(location)
-                        }) {
-                            Text("Confirm Location")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .padding()
-                                .frame(maxWidth: .infinity)
-                                .background(Color.blue)
-                                .cornerRadius(10)
-                        }
-                        .padding(.horizontal)
-                    }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
-                    .padding()
-                }
             }
             .padding(.vertical)
             .navigationTitle(isChangeLocationMode ? "Change Location" : "Welcome")
@@ -172,17 +146,43 @@ struct WelcomeView: View {
                 print("WelcomeView appeared. Setting up location helper callbacks.")
                 locationHelper.onLocationReceived = { coordinate in
                     print("WelcomeView: Received location callback: \(coordinate)")
-                    self.userLocation = coordinate
-                    self.findNearbyStations(userLocation: coordinate)
+                    
+                    // Only proceed if the button explicitly requested it
+                    if self.didRequestClosestStation {
+                        print("WelcomeView: Processing location received due to button press.")
+                        // Reset the flag
+                        self.didRequestClosestStation = false
+                        
+                        // Directly fetch and select the closest station
+                        TideStationService.shared.nearestStations(userLocation: coordinate) { results in
+                             print("WelcomeView (Button Flow): Received \(results.count) nearby stations.")
+                             self.isLoadingNearbyStations = false // Stop loading indicator
+                             if let closestStation = results.first {
+                                  print("WelcomeView (Button Flow): Automatically selecting closest station: \(closestStation.name)")
+                                  // Select location (saves and dismisses/completes setup)
+                                  self.selectLocation(closestStation)
+                             } else {
+                                  print("WelcomeView (Button Flow): No nearby stations found.")
+                                  // Optionally show an error to the user here
+                             }
+                        }
+                    } else {
+                        print("WelcomeView: Ignoring location received (not requested by button).")
+                        // Optional: Could update userLocation state here if needed for distance display in manual search results
+                        // self.userLocation = coordinate 
+                        // self.findNearbyStations(userLocation: coordinate) // <-- We don't want this automatic list population anymore either
+                    }
                 }
                 locationHelper.onPermissionDenied = {
                     print("WelcomeView: Received permission denied callback.")
                     self.isLoadingNearbyStations = false
+                    self.didRequestClosestStation = false // Reset flag on denial
                     self.showLocationPermissionAlert = true
                 }
                 locationHelper.onLocationError = {
                     print("WelcomeView: Received location error callback.")
                     self.isLoadingNearbyStations = false
+                    self.didRequestClosestStation = false // Reset flag on error
                     // Optionally show a different error message
                 }
             }

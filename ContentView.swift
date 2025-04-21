@@ -24,6 +24,15 @@ struct ContentView: View {
     @State private var chartData: [TidePoint] = []
     @State private var showingChangeLocationSheet = false
     
+    // State for chart interaction
+    @State private var rawSelectedDate: Date? = nil 
+    @State private var selectedHeight: Double? = nil
+    
+    // Computed property to get the selected date, default to now if nil (for initial line)
+    private var currentDateForIndicator: Date {
+        rawSelectedDate ?? Date()
+    }
+    
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -55,6 +64,7 @@ struct ContentView: View {
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
                             Text(String(format: "%.1f", currentTideHeight))
                                 .font(.system(size: 60, weight: .bold)) // Reduced font size
+                                .minimumScaleFactor(0.5) // Allow text to shrink
                             
                             Text("ft")
                                 .font(.title2)
@@ -75,105 +85,143 @@ struct ContentView: View {
                     .cornerRadius(15)
                     .padding(.horizontal)
 
-                    // 2. Tide Graph (NOW IN MIDDLE)
-                    if !chartData.isEmpty {
-                        Chart(chartData) { point in
-                            // Line connecting all points
-                            LineMark(
-                                x: .value("Time", point.date),
-                                y: .value("Height", point.value)
-                            )
-                            .interpolationMethod(.catmullRom) // Smooth curve
-                            .foregroundStyle(.blue)
+                    // Wrap lower content in a ScrollView
+                    ScrollView {
+                        VStack(spacing: 20) { // Embed existing content in a new VStack for ScrollView
+                            // 2. Tide Graph (NOW IN MIDDLE)
+                            if !chartData.isEmpty {
+                                Chart(chartData) { point in
+                                    // Line connecting all points
+                                    LineMark(
+                                        x: .value("Time", point.date),
+                                        y: .value("Height", point.value)
+                                    )
+                                    .interpolationMethod(.catmullRom) // Smooth curve
+                                    .foregroundStyle(.blue)
 
-                            // Points marking High/Low Tides
-                            PointMark(
-                                x: .value("Time", point.date),
-                                y: .value("Height", point.value)
-                            )
-                            .symbol(point.type == "H" ? .circle : .diamond) // Different symbols
-                            .foregroundStyle(point.type == "H" ? Color.blue : Color.green)
-                            // .annotation(position: .top) { // Optional: Annotate points
-                            //     Text(String(format: "%.1fft", point.value))
-                            //         .font(.caption)
-                            // }
-                        }
-                        // Add an explicit rule mark for the current time
-                        .chartOverlay { proxy in
-                            GeometryReader { geometry in
-                                let origin = geometry[proxy.plotAreaFrame].origin
-                                let currentX = proxy.position(forX: Date()) ?? 0
-                                
-                                // Check if current time is within plot area
-                                if currentX >= origin.x && currentX <= origin.x + geometry[proxy.plotAreaFrame].size.width {
-                                    Rectangle()
-                                        .fill(.red)
-                                        .frame(width: 1)
-                                        .offset(x: currentX - geometry[proxy.plotAreaFrame].minX)
+                                    // Points marking High/Low Tides
+                                    PointMark(
+                                        x: .value("Time", point.date),
+                                        y: .value("Height", point.value)
+                                    )
+                                    .symbol(point.type == "H" ? .circle : .diamond) // Different symbols
+                                    .foregroundStyle(point.type == "H" ? Color.blue : Color.green)
+                                    // .annotation(position: .top) { // Optional: Annotate points
+                                    //     Text(String(format: "%.1fft", point.value))
+                                    //         .font(.caption)
+                                    // }
                                 }
-                            }
-                        }
-                        .chartXAxis {
-                            AxisMarks(values: .stride(by: .hour, count: 3)) { _ in // Show marks every 3 hours
-                                AxisValueLabel(format: .dateTime.hour(.defaultDigits(amPM: .abbreviated)))
-                                AxisGridLine()
-                            }
-                        }
-                        .chartYAxis {
-                            AxisMarks { value in
-                                AxisValueLabel(String(format: "%.0fft", value.as(Double.self) ?? 0))
-                                AxisGridLine()
-                            }
-                        }
-                        .frame(height: 200)
-                        .padding(.horizontal)
-                        .padding(.bottom)
-                    } else {
-                        // Show placeholder if no chart data yet
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.1))
-                            .frame(height: 200)
-                            .overlay(Text("Loading Chart..."))
-                            .padding(.horizontal)
-                            .padding(.bottom)
-                    }
+                                // Add an explicit rule mark and handle gestures
+                                .chartOverlay { proxy in
+                                    GeometryReader { geometry in
+                                        Rectangle().fill(.clear).contentShape(Rectangle()) // Catch gestures
+                                            .gesture(
+                                                DragGesture(minimumDistance: 0)
+                                                    .onChanged { value in
+                                                        let location = value.location
+                                                        // Find the date at the drag location
+                                                        if let date: Date = proxy.value(atX: location.x) {
+                                                            // Clamp date to the chart's visible domain if necessary
+                                                            let clampedDate = min(max(date, chartData.first?.date ?? date), chartData.last?.date ?? date)
+                                                            rawSelectedDate = clampedDate // Update the raw selected date
+                                                            // Interpolate height
+                                                            selectedHeight = interpolatedHeight(for: clampedDate, using: chartData)
+                                                            // print("Selected Date: \(clampedDate), Height: \(selectedHeight ?? -999)") // Debug print
+                                                        }
+                                                    }
+                                                    .onEnded { _ in
+                                                        // Clear selection on gesture end
+                                                        rawSelectedDate = nil
+                                                        selectedHeight = nil
+                                                    }
+                                            )
 
-                    // 3. Tide schedule (NOW AT BOTTOM)
-                    VStack(spacing: 15) {
-                        Text("Tide Schedule")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        TideInfoRow(title: "Next Low Tide", time: nextLowTide, height: nextLowTideHeight, imageName: "arrow.down")
-                        
-                        Divider()
-                        
-                        TideInfoRow(title: "Last Low Tide", time: lastLowTide, height: lastLowTideHeight, imageName: "arrow.down")
-                        
-                        Divider()
-                        
-                        TideInfoRow(title: "Next High Tide", time: nextHighTide, height: nextHighTideHeight, imageName: "arrow.up")
-                        
-                        Divider()
-                        
-                        TideInfoRow(title: "Last High Tide", time: lastHighTide, height: lastHighTideHeight, imageName: "arrow.up")
-                    }
-                    .padding()
-                    .cornerRadius(15)
-                    .padding(.horizontal)
-                    
-                    if let lastUpdateTime = lastUpdateTime {
-                        Text("Last updated: \(dateFormatter.string(from: lastUpdateTime))")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                    
-                    if let errorMessage = errorMessage {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundColor(.red)
+                                        // --- Draw Indicator Line ---
+                                        let origin = geometry[proxy.plotAreaFrame].origin
+                                        // Use computed property for indicator position
+                                        let currentX = proxy.position(forX: currentDateForIndicator) ?? 0 
+                                        
+                                        // Check if the indicator time is within plot area
+                                        if currentX >= origin.x && currentX <= origin.x + geometry[proxy.plotAreaFrame].size.width {
+                                            Rectangle()
+                                                .fill(rawSelectedDate == nil ? .red : .gray) // Red for now, gray for scrub
+                                                .frame(width: 1)
+                                                .offset(x: currentX - geometry[proxy.plotAreaFrame].minX)
+                                        }
+                                        
+                                        // --- Display Selected Values (Placeholder) ---
+                                        if let selectedDate = rawSelectedDate, let height = selectedHeight {
+                                            // We will add proper display logic here
+                                            Text("Selected: \(selectedDate.formatted(date: .omitted, time: .shortened)) - \(height, specifier: "%.1f")ft")
+                                                .font(.caption)
+                                                .background(Color.white.opacity(0.7))
+                                                .position(x: geometry.size.width / 2, y: 20) // Example position
+                                        }
+                                    }
+                                }
+                                .chartXAxis {
+                                    AxisMarks(values: .stride(by: .hour, count: 3)) { _ in // Show marks every 3 hours
+                                        AxisValueLabel(format: .dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+                                        AxisGridLine()
+                                    }
+                                }
+                                .chartYAxis {
+                                    AxisMarks { value in
+                                        AxisValueLabel(String(format: "%.0fft", value.as(Double.self) ?? 0))
+                                        AxisGridLine()
+                                    }
+                                }
+                                .frame(height: 200)
+                                .padding(.horizontal)
+                                .padding(.bottom)
+                            } else {
+                                // Show placeholder if no chart data yet
+                                Rectangle()
+                                    .fill(Color.gray.opacity(0.1))
+                                    .frame(height: 200)
+                                    .overlay(Text("Loading Chart..."))
+                                    .padding(.horizontal)
+                                    .padding(.bottom)
+                            }
+
+                            // 3. Tide schedule (NOW AT BOTTOM)
+                            VStack(spacing: 15) {
+                                Text("Tide Schedule")
+                                    .font(.headline)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                TideInfoRow(title: "Next Low Tide", time: nextLowTide, height: nextLowTideHeight, imageName: "arrow.down")
+                                
+                                Divider()
+                                
+                                TideInfoRow(title: "Last Low Tide", time: lastLowTide, height: lastLowTideHeight, imageName: "arrow.down")
+                                
+                                Divider()
+                                
+                                TideInfoRow(title: "Next High Tide", time: nextHighTide, height: nextHighTideHeight, imageName: "arrow.up")
+                                
+                                Divider()
+                                
+                                TideInfoRow(title: "Last High Tide", time: lastHighTide, height: lastHighTideHeight, imageName: "arrow.up")
+                            }
+                            .padding()
+                            .cornerRadius(15)
                             .padding(.horizontal)
-                    }
+                            
+                            if let lastUpdateTime = lastUpdateTime {
+                                Text("Last updated: \(dateFormatter.string(from: lastUpdateTime))")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                            
+                            if let errorMessage = errorMessage {
+                                Text(errorMessage)
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .padding(.horizontal)
+                            }
+                        } // End of inner VStack for ScrollView
+                    } // End of ScrollView
                 }
                 .padding(.vertical)
                 .navigationBarTitleDisplayMode(.inline)
@@ -277,6 +325,46 @@ struct ContentView: View {
         self.nextHighTideHeight = tideData.nextHighTideHeight
         self.lastHighTideHeight = tideData.lastHighTideHeight
         self.chartData = tideData.chartPoints
+    }
+    
+    // Helper function to interpolate height at a specific date from HILO points
+    private func interpolatedHeight(for date: Date, using points: [TidePoint]) -> Double? {
+        guard !points.isEmpty else { return nil }
+        
+        // Find points immediately before and after the target date
+        var previousPoint: TidePoint? = nil
+        var nextPoint: TidePoint? = nil
+        
+        for point in points {
+            if point.date <= date {
+                previousPoint = point
+            }
+            if point.date > date {
+                nextPoint = point
+                break // Found the next point, no need to continue
+            }
+        }
+        
+        // Perform interpolation
+        if let prev = previousPoint, let next = nextPoint {
+            let totalInterval = next.date.timeIntervalSince(prev.date)
+            if totalInterval > 0 { // Avoid division by zero
+                let elapsedInterval = date.timeIntervalSince(prev.date)
+                let fraction = max(0, min(1, elapsedInterval / totalInterval)) // Clamp between 0 and 1
+                return prev.value + fraction * (next.value - prev.value)
+            } else {
+                return prev.value // Interval is zero, use previous value
+            }
+        } else if let prev = previousPoint {
+            // Date is after the last point in the array
+            return prev.value
+        } else if let next = nextPoint {
+            // Date is before the first point in the array
+            return next.value
+        } else {
+            // Should not happen if points is not empty
+            return nil
+        }
     }
 }
 
